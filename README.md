@@ -12,7 +12,11 @@ rmlint is great for finding exact copies, but it misses these cases. mltlint sol
 
 ## Install
 
-Download a binary from [Releases](../../releases) or build from source:
+```bash
+curl -fsSL https://raw.githubusercontent.com/vovanmozg/mltlint/main/install.sh | bash
+```
+
+Or download a binary from [Releases](../../releases), or build from source:
 
 ```bash
 go build -o mltlint ./cmd/mltlint
