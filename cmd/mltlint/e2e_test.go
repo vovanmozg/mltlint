@@ -2,6 +2,8 @@ package main_test
 
 import (
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,4 +168,75 @@ func TestE2E_AbortedRun(t *testing.T) {
 		}
 	}
 	// If no JSON was written, that's also OK (interrupted during phase 1)
+}
+
+// rotate90File decodes src, rotates it 90° (independently of production code),
+// and writes the result as a JPEG to dst. Any cardinal rotation of the source
+// matches one of the original's four indexed orientations, so the exact
+// direction does not matter.
+func rotate90File(t *testing.T, src, dst string) {
+	t.Helper()
+	in, err := os.Open(src)
+	require.NoError(t, err)
+	defer in.Close()
+	img, _, err := image.Decode(in)
+	require.NoError(t, err)
+
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	rot := image.NewRGBA(image.Rect(0, 0, h, w))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			rot.Set(h-1-y, x, img.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+
+	out, err := os.Create(dst)
+	require.NoError(t, err)
+	defer out.Close()
+	require.NoError(t, jpeg.Encode(out, rot, &jpeg.Options{Quality: 92}))
+}
+
+// E2E.ROT — a 90°-rotated copy of an original is reported as a duplicate.
+func TestE2E_RotatedDuplicate(t *testing.T) {
+	bin := buildBinary(t)
+	base := t.TempDir()
+	originals := filepath.Join(base, "originals")
+	unsorted := filepath.Join(base, "unsorted")
+	dups := filepath.Join(base, "dups")
+	output := filepath.Join(base, "output")
+	for _, d := range []string{originals, unsorted, dups, output} {
+		require.NoError(t, os.MkdirAll(d, 0755))
+	}
+
+	fixtures := filepath.Join(repoRoot(t), "testdata", "media")
+	copyFile(t, filepath.Join(fixtures, "10.jpg"), filepath.Join(originals, "10.jpg"))
+	rotate90File(t, filepath.Join(fixtures, "10.jpg"), filepath.Join(unsorted, "rotated.jpg"))
+
+	cachePath := filepath.Join(t.TempDir(), "cache.db")
+	cmd := exec.Command(bin,
+		"--originals="+originals, "--unsorted="+unsorted,
+		"--dups="+dups, "--output="+output, "--cache="+cachePath)
+	out, err := cmd.CombinedOutput()
+	t.Logf("output:\n%s", out)
+	require.NoError(t, err)
+
+	jsonData, err := os.ReadFile(filepath.Join(output, "mltlint.json"))
+	require.NoError(t, err)
+	var records []map[string]interface{}
+	require.NoError(t, json.Unmarshal(jsonData, &records))
+
+	footer := records[len(records)-1]
+	require.Equal(t, "footer", footer["type"])
+	require.GreaterOrEqual(t, footer["duplicates"].(float64), float64(1))
+
+	foundDup := false
+	for _, r := range records[1 : len(records)-1] {
+		if r["is_original"] == false {
+			if p, _ := r["path"].(string); strings.Contains(p, "rotated.jpg") {
+				foundDup = true
+			}
+		}
+	}
+	require.True(t, foundDup, "rotated copy was not detected as a duplicate")
 }

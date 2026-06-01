@@ -116,6 +116,98 @@ func TestCmp_CLOSEST(t *testing.T) {
 	require.Equal(t, 1, r.Distance)
 }
 
+// Cycle 10: CMP.ROT — unsorted hash equals one of the original's rotation
+// hashes → matched as similar to that original.
+func TestCmp_ROT(t *testing.T) {
+	o := &scanner.FileInfo{
+		Path: "/originals/o.jpg", RelativePath: "o.jpg",
+		PHash: 100, PHash90: 200, PHash180: 300, PHash270: 400,
+		Width: 250, Height: 250, Size: 8000,
+	}
+	// Unsorted file looks like o rotated 90° (its natural hash == o.PHash90).
+	u := &scanner.FileInfo{
+		Path: "/unsorted/u.jpg", RelativePath: "u.jpg",
+		MD5: "zzz", PHash: 200, Width: 250, Height: 250, Size: 8123,
+	}
+	indexes := comparator.BuildIndexes([]*scanner.FileInfo{o})
+	r, err := comparator.Classify(context.Background(), u, indexes, noop)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, "/originals/o.jpg", r.Original.Path)
+	require.Equal(t, "similar", r.Level)
+	require.Equal(t, 0, r.Distance)
+}
+
+// Cycle 11: CMP.ROT.RATIO — a 90° rotation that inverts the aspect ratio is
+// still found via the inverted ratio bucket.
+func TestCmp_ROT_RATIO(t *testing.T) {
+	// Original is landscape 400x200 (ratio 2.0); its 90° hash is 500.
+	o := &scanner.FileInfo{
+		Path: "/originals/wide.jpg", RelativePath: "wide.jpg",
+		PHash: 100, PHash90: 500, PHash180: 110, PHash270: 510,
+		Width: 400, Height: 200, Size: 8000,
+	}
+	// Unsorted is the rotated copy: portrait 200x400 (ratio 0.5), hash 500.
+	u := &scanner.FileInfo{
+		Path: "/unsorted/tall.jpg", RelativePath: "tall.jpg",
+		MD5: "yyy", PHash: 500, Width: 200, Height: 400, Size: 8200,
+	}
+	indexes := comparator.BuildIndexes([]*scanner.FileInfo{o})
+	r, err := comparator.Classify(context.Background(), u, indexes, noop)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, "/originals/wide.jpg", r.Original.Path)
+	require.Equal(t, "similar", r.Level)
+	require.Equal(t, 0, r.Distance)
+}
+
+// CMP.CLOSEST — when a rotated match (via one original's 90° hash) ties with a
+// same-orientation match (another original's 0° hash) at distance 0, the lower
+// path wins, regardless of which orientation produced the hit.
+func TestCmp_ROT_TIE(t *testing.T) {
+	a := &scanner.FileInfo{
+		Path: "/originals/a.jpg", RelativePath: "a.jpg",
+		PHash: 700, PHash90: 600, PHash180: 701, PHash270: 601,
+		Width: 250, Height: 250, Size: 8000,
+	}
+	b := &scanner.FileInfo{
+		Path: "/originals/b.jpg", RelativePath: "b.jpg",
+		PHash: 600, PHash90: 800, PHash180: 610, PHash270: 810,
+		Width: 250, Height: 250, Size: 9000,
+	}
+	// u matches a via a.PHash90 (dist 0) and b via b.PHash (dist 0) — a wins by path.
+	u := &scanner.FileInfo{
+		Path: "/unsorted/u.jpg", RelativePath: "u.jpg",
+		MD5: "ttt", PHash: 600, Width: 250, Height: 250, Size: 10000,
+	}
+	indexes := comparator.BuildIndexes([]*scanner.FileInfo{b, a}) // input order shuffled
+	r, err := comparator.Classify(context.Background(), u, indexes, noop)
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, "/originals/a.jpg", r.Original.Path) // lower path wins the tie
+	require.Equal(t, 0, r.Distance)
+}
+
+// CMP.ROT.RATIO — a non-square original is NOT matched by an unsorted file at a
+// different aspect ratio whose hash is far from the orientations indexed there.
+func TestCmp_ROT_NORATIO(t *testing.T) {
+	o := &scanner.FileInfo{
+		Path: "/originals/wide.jpg", RelativePath: "wide.jpg",
+		PHash: 100, PHash90: 500, PHash180: 110, PHash270: 510,
+		Width: 400, Height: 200, Size: 8000,
+	}
+	// Portrait file (ratio 0.5) lands in the swapped bucket {500, 510}; its hash
+	// is far from both, and the landscape bucket {100, 110} is never consulted.
+	u := &scanner.FileInfo{
+		Path: "/unsorted/tall.jpg", RelativePath: "tall.jpg",
+		MD5: "uuu", PHash: 999, Width: 200, Height: 400, Size: 8200,
+	}
+	indexes := comparator.BuildIndexes([]*scanner.FileInfo{o})
+	r, err := comparator.Classify(context.Background(), u, indexes, noop)
+	require.NoError(t, err)
+	require.Nil(t, r)
+}
+
 // Cycle 9: CMP.SCORE — test exact score values.
 func TestCmp_SCORE(t *testing.T) {
 	o := fi("/originals/photo.jpg", "aaa", 100, 250, 250, 8000)

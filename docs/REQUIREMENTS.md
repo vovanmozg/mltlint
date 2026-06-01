@@ -60,6 +60,11 @@ internal/scanner/scanner_test.go:TestScan_MD5
 Perceptual hash is computed on demand for determining visual similarity.
 internal/scanner/scanner_test.go:TestScan_PHASH
 
+## SCAN.PHASH.ROT
+
+Perceptual hashes for all four cardinal rotations (0/90/180/270°) are computed for an original from a single decode.
+internal/scanner/scanner_test.go:TestScan_PHASH_ROT
+
 ## CACHE
 
 Caching phash in bbolt for faster repeated runs.
@@ -88,6 +93,11 @@ internal/cache/cache_test.go:TestCache_INV_SIZE
 
 When phash is stored again for the same path, the entry is updated.
 internal/cache/cache_test.go:TestCache_UPD
+
+## CACHE.ROT
+
+Rotation hashes are cached as separate entries under NUL-suffixed derived keys (path+"\x00r90"/"\x00r180"/"\x00r270"); the bucket and 8-byte value format are unchanged, so existing caches stay valid. When all four keys are cached, the file is not decoded.
+internal/scanner/scanner_test.go:TestScan_PHASH_ROT_CACHE
 
 ## CMP
 
@@ -125,8 +135,18 @@ internal/comparator/comparator_test.go:TestCmp_DOUBT_RATIO_OK
 
 ## CMP.CLOSEST
 
-For each unsorted file, the closest original (minimum hamming distance) is selected; ties broken by stable path order.
+For each unsorted file, the closest original (minimum hamming distance over all indexed orientations) is selected. An original contributes multiple candidate entries (one per rotation); ties are broken by stable path order.
 internal/comparator/comparator_test.go:TestCmp_CLOSEST
+
+## CMP.ROT
+
+An original rotated 90/180/270° and placed in unsorted is matched as a duplicate (distance ~0) against that original.
+internal/comparator/comparator_test.go:TestCmp_ROT
+
+## CMP.ROT.RATIO
+
+A rotation that inverts the aspect ratio (90/270°) is still found via the inverted ratio bucket.
+internal/comparator/comparator_test.go:TestCmp_ROT_RATIO
 
 ## CMP.SCORE
 
@@ -312,3 +332,8 @@ cmd/mltlint/e2e_test.go:TestE2E_EmptyOriginals
 
 Interrupted run: if JSON is written, footer has aborted=true.
 cmd/mltlint/e2e_test.go:TestE2E_AbortedRun
+
+## E2E.ROT
+
+A physically rotated copy of an original is detected as a duplicate end-to-end.
+cmd/mltlint/e2e_test.go:TestE2E_RotatedDuplicate

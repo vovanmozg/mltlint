@@ -39,7 +39,7 @@ func WriteJSON(w io.Writer, cfg Config, groups []*Group, stats Stats) error {
 		"description":   "mlt3 duplicate report",
 		"cwd":           cfg.Cwd,
 		"args":          cfg.Args,
-		"version":       "1.0.0",
+		"version":       "1.1.0",
 		"rev":           "",
 		"progress":      0,
 		"checksum_type": "phash-dct64",

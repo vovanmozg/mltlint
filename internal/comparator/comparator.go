@@ -23,7 +23,14 @@ type Result struct {
 // Indexes holds pre-built lookup indexes over originals.
 type Indexes struct {
 	BySize  map[int64][]*scanner.FileInfo
-	ByRatio map[float64][]*scanner.FileInfo
+	ByRatio map[float64][]rotCandidate
+}
+
+// rotCandidate is one orientation of an original: a precomputed rotation hash
+// plus a back-pointer to the original file for reporting.
+type rotCandidate struct {
+	hash     uint64
+	original *scanner.FileInfo
 }
 
 // HashComputer is the interface used to compute hashes on demand.
@@ -40,8 +47,24 @@ func Ratio(f *scanner.FileInfo) float64 {
 	return math.Round(float64(f.Width)/float64(f.Height)*10) / 10
 }
 
+// RatioSwapped returns the aspect ratio of the file with width/height swapped
+// (i.e. the ratio it has after a 90°/270° rotation), computed directly from
+// dimensions to avoid compounding the rounding already applied by Ratio.
+func RatioSwapped(f *scanner.FileInfo) float64 {
+	if f.Width == 0 || f.Height == 0 {
+		return 0
+	}
+	return math.Round(float64(f.Height)/float64(f.Width)*10) / 10
+}
+
 // BuildIndexes builds BySize and ByRatio indexes over originals.
 // Originals are sorted by Path for stable tie-breaking. Files with Err != nil are skipped.
+//
+// The 0° hash (PHash) is always indexed. The 90/180/270° rotation hashes are
+// indexed only when populated (non-zero) — they are zero for an original hashed
+// with ComputePHash instead of ComputePHashRotations, and a real image never has
+// a true-zero perceptual hash, so skipping zeros keeps rotation matching opt-in
+// without ever fabricating a match against an absent orientation.
 func BuildIndexes(originals []*scanner.FileInfo) *Indexes {
 	sorted := make([]*scanner.FileInfo, 0, len(originals))
 	for _, o := range originals {
@@ -54,12 +77,25 @@ func BuildIndexes(originals []*scanner.FileInfo) *Indexes {
 	})
 
 	bySize := make(map[int64][]*scanner.FileInfo)
-	byRatio := make(map[float64][]*scanner.FileInfo)
+	byRatio := make(map[float64][]rotCandidate)
 
 	for _, o := range sorted {
 		bySize[o.Size] = append(bySize[o.Size], o)
-		r := Ratio(o)
-		byRatio[r] = append(byRatio[r], o)
+
+		r := Ratio(o)         // 0° and 180° keep the original ratio
+		rs := RatioSwapped(o) // 90° and 270° invert width/height
+
+		// 0° is always present; rotations are indexed only when computed.
+		byRatio[r] = append(byRatio[r], rotCandidate{hash: o.PHash, original: o})
+		if o.PHash180 != 0 {
+			byRatio[r] = append(byRatio[r], rotCandidate{hash: o.PHash180, original: o})
+		}
+		if o.PHash90 != 0 {
+			byRatio[rs] = append(byRatio[rs], rotCandidate{hash: o.PHash90, original: o})
+		}
+		if o.PHash270 != 0 {
+			byRatio[rs] = append(byRatio[rs], rotCandidate{hash: o.PHash270, original: o})
+		}
 	}
 
 	return &Indexes{BySize: bySize, ByRatio: byRatio}
@@ -105,26 +141,22 @@ func Classify(ctx context.Context, file *scanner.FileInfo, indexes *Indexes, hc 
 		return nil, err
 	}
 
-	// Step 3: Look up by ratio, find min hamming distance.
+	// Step 3: Look up by ratio among the originals' precomputed rotation
+	// candidates, and find the minimum hamming distance.
 	fileRatio := Ratio(file)
 	candidates, ok := indexes.ByRatio[fileRatio]
 	if !ok || len(candidates) == 0 {
 		return nil, nil
 	}
 
-	// Compute phash for all ratio candidates.
-	if err := hc.ComputePHash(ctx, candidates); err != nil {
-		return nil, err
-	}
-
 	bestDist := math.MaxInt32
 	var bestOriginal *scanner.FileInfo
 
 	for _, c := range candidates {
-		d := hammingDistance(file.PHash, c.PHash)
+		d := hammingDistance(file.PHash, c.hash)
 		if d < bestDist {
 			bestDist = d
-			bestOriginal = c
+			bestOriginal = c.original
 		}
 	}
 

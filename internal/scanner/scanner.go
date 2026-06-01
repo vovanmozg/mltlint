@@ -35,6 +35,14 @@ var supportedExts = map[string]bool{
 	".webp": true,
 }
 
+// Rotation cache-key suffixes. NUL is forbidden in filesystem paths, so these
+// derived keys cannot collide with a real file's path.
+const (
+	rotSuffix90  = "\x00r90"
+	rotSuffix180 = "\x00r180"
+	rotSuffix270 = "\x00r270"
+)
+
 // FileInfo holds metadata and lazily-computed hashes for a single media file.
 type FileInfo struct {
 	Path         string
@@ -44,7 +52,10 @@ type FileInfo struct {
 	Width        int
 	Height       int
 	MD5          string // empty until ComputeMD5
-	PHash        uint64 // zero until ComputePHash
+	PHash        uint64 // 0° hash; zero until ComputePHash/ComputePHashRotations
+	PHash90      uint64 // 90° hash; zero until ComputePHashRotations
+	PHash180     uint64 // 180° hash; zero until ComputePHashRotations
+	PHash270     uint64 // 270° hash; zero until ComputePHashRotations
 	Err          error  // per-file soft error, or nil
 }
 
@@ -275,4 +286,118 @@ func computeFilePHash(path string) (uint64, error) {
 		return 0, err
 	}
 	return h.GetHash(), nil
+}
+
+// rotate90 returns img rotated 90° clockwise as a new RGBA image.
+func rotate90(img image.Image) image.Image {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, h, w))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(h-1-y, x, img.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
+// computeFilePHashRotations decodes the image once and returns the perceptual
+// hashes of its four cardinal rotations: [0°, 90°, 180°, 270°].
+// Rotations are hashed one at a time, so only a couple of rotated copies are
+// live at once and peak memory stays a small multiple of the decoded image.
+func computeFilePHashRotations(path string) ([4]uint64, error) {
+	var out [4]uint64
+
+	f, err := os.Open(path)
+	if err != nil {
+		return out, err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return out, err
+	}
+
+	hashOf := func(im image.Image) (uint64, error) {
+		h, err := goimagehash.PerceptionHash(im)
+		if err != nil {
+			return 0, err
+		}
+		return h.GetHash(), nil
+	}
+
+	if out[0], err = hashOf(img); err != nil {
+		return out, err
+	}
+	r := rotate90(img)
+	if out[1], err = hashOf(r); err != nil {
+		return out, err
+	}
+	r = rotate90(r)
+	if out[2], err = hashOf(r); err != nil {
+		return out, err
+	}
+	r = rotate90(r)
+	if out[3], err = hashOf(r); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// ComputePHashRotations fills PHash, PHash90, PHash180, PHash270 for each file
+// using parallel workers. Each file is decoded once. Unlike ComputePHash, which
+// computes only the 0° hash, this computes all four cardinal orientations and
+// caches each under its own key.
+func (s *Scanner) ComputePHashRotations(ctx context.Context, files []*FileInfo) error {
+	sem := make(chan struct{}, s.workers)
+	var wg sync.WaitGroup
+
+	for _, fi := range files {
+		fi := fi
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			select {
+			case <-ctx.Done():
+				fi.Err = ctx.Err()
+				return
+			default:
+			}
+
+			// Cache fast path: skip decode only when all four rotations are
+			// cached. A partial hit means the set is inconsistent (e.g. left by
+			// an older binary), so we fall through and recompute the whole set.
+			if s.cache != nil {
+				h0, ok0 := s.cache.Get(fi.Path, fi.Mtime, fi.Size)
+				h90, ok90 := s.cache.Get(fi.Path+rotSuffix90, fi.Mtime, fi.Size)
+				h180, ok180 := s.cache.Get(fi.Path+rotSuffix180, fi.Mtime, fi.Size)
+				h270, ok270 := s.cache.Get(fi.Path+rotSuffix270, fi.Mtime, fi.Size)
+				if ok0 && ok90 && ok180 && ok270 {
+					fi.PHash, fi.PHash90, fi.PHash180, fi.PHash270 = h0, h90, h180, h270
+					return
+				}
+			}
+
+			hashes, err := computeFilePHashRotations(fi.Path)
+			if err != nil {
+				fi.Err = err
+				return
+			}
+			fi.PHash, fi.PHash90, fi.PHash180, fi.PHash270 = hashes[0], hashes[1], hashes[2], hashes[3]
+
+			if s.cache != nil {
+				_ = s.cache.Set(fi.Path, fi.Mtime, fi.Size, hashes[0])
+				_ = s.cache.Set(fi.Path+rotSuffix90, fi.Mtime, fi.Size, hashes[1])
+				_ = s.cache.Set(fi.Path+rotSuffix180, fi.Mtime, fi.Size, hashes[2])
+				_ = s.cache.Set(fi.Path+rotSuffix270, fi.Mtime, fi.Size, hashes[3])
+			}
+		}()
+	}
+
+	wg.Wait()
+	return nil
 }

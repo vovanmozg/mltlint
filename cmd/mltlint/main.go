@@ -100,8 +100,8 @@ func runPipeline(cfg config) int {
 	default:
 	}
 
-	fmt.Fprintf(os.Stderr, "[phase 1/2] originals: scanned %d, computing phash...\n", len(origFiles))
-	if err := sc.ComputePHash(ctx, origFiles); err != nil {
+	fmt.Fprintf(os.Stderr, "[phase 1/2] originals: scanned %d, computing phash (4 rotations)...\n", len(origFiles))
+	if err := sc.ComputePHashRotations(ctx, origFiles); err != nil {
 		fmt.Fprintf(os.Stderr, "mltlint: compute phash for originals: %v\n", err)
 		return 1
 	}
