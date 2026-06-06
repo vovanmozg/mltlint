@@ -25,6 +25,15 @@ When you change code (anything under `cmd/` or `internal/`), you MUST:
 
 Docs-only changes (README, docs/, this file) do not need a version bump.
 
+## Git commits
+
+- Make normal incremental commits and leave history alone. Do **not** squash,
+  rebase, or amend existing commits on your own initiative — only when I
+  explicitly ask for it.
+- Reason: a commit may already be pushed. Rewriting it makes the local and
+  remote histories diverge, which then needs a force-push to reconcile and is
+  an unwelcome surprise. Default to additive history.
+
 ## Tests
 
 ```bash
